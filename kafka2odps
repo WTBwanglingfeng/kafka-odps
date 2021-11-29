@@ -1,0 +1,132 @@
+from odps import ODPS
+from odps.tunnel import TableTunnel
+from kafka import TopicPartition
+from kafka import KafkaConsumer
+import sys
+import re
+import time, datetime
+
+#maxcompute setup
+access_id = ''
+access_key = ''
+project = ''
+endpoint = ''
+#maxcompute init and get update table
+odps = ODPS(access_id, access_key, project, endpoint)
+#maxcompute init and get update table
+upload_table = odps.get_table('log_table')
+#kafka setup
+bootstrap_servers = ['']
+topicName = ''
+#kafka consumer init
+consumer = KafkaConsumer (topicName, group_id = '',bootstrap_servers = bootstrap_servers, auto_offset_reset = 'earliest')
+tunnel = TableTunnel(odps)
+
+try:
+    #先消费一个
+    message = next(consumer)
+    #解析提取timestamp
+    ts = re.search('\\\\"timestamp[^0-9]*([0-9]*)', str(message.value)).group(1)
+    print('当前ts:',ts)
+    #ts转换成年月日时分秒形式，之后写入分区
+    ts = time.strftime("%Y%m%d%H", time.localtime(int(ts)))
+    #记录当前ts
+    last_ts = ts
+    #建立分区
+    upload_table.create_partition('ds='+ts, if_not_exists=True)
+    upload_session = tunnel.create_stream_upload_session(upload_table, partition_spec='ds=' + ts)
+    writer = upload_session.open_record_writer()
+    #数据写入数据表
+    record = upload_table.new_record()
+    if message.key is not None:
+        record[0] = message.key.decode('utf-8')
+    else:
+        record[0] = ''
+    record[1] = message.value.decode('utf-8')
+    record[2] = ts
+    writer.write(record)
+    count = 1
+
+    for message in consumer:
+        #100个记录上传一次 重置count 
+        if count % 100 == 0:
+            writer.close()
+            writer = upload_session.open_record_writer()
+            count = 1
+        
+        print('%d号任务启动' %count)
+        start = datetime.datetime.now()
+        print('启动时间:',start.strftime('%Y.%m.%d %H:%M:%S'))
+        
+        #获取时间
+        ts = re.search('\\\\"timestamp[^0-9]*([0-9]*)', str(message.value)).group(1)
+        print('当前ts:',ts)
+        ts = time.strftime("%Y%m%d%H", time.localtime(int(ts)))
+        #判断是否存在分区
+        panduan1 = datetime.datetime.now()
+        is_exist = (last_ts == ts)
+        panduan2 = datetime.datetime.now()
+        print('判断是否存在分区时长:', panduan2-panduan1)
+        #记录当前ts用于下次比较
+        last_ts = ts
+        #存在分区，直接写入
+        if is_exist:
+            print('存在分区')
+            if message.key is not None:
+                record[0] = message.key.decode('utf-8')
+            else:
+                record[0] = ''
+            record[1] = message.value.decode('utf-8')
+            record[2] = ts
+            write_record_time = datetime.datetime.now()
+            writer.write(record)
+            write_time = datetime.datetime.now()
+            print('start到write时长:',write_time-start, 'write.write(record)时长:', write_time-write_record_time)
+            
+
+        # 无分区，先建立接口再写入
+        else:
+            print('新建分区')
+            # count不为1则上传一次
+            if count != 1:
+                writer.close()
+            upload_table.create_partition('ds='+ts, if_not_exists=True)
+            upload_session = tunnel.create_stream_upload_session(upload_table, partition_spec='ds='+ts)
+            create_session = datetime.datetime.now()
+            print('create_session时长:',create_session-start)
+            #print("%s:%d:%d: key=%s value=%s" % (message.topic, message.partition, message.offset, message.key, message.value))
+            writer = upload_session.open_record_writer()
+            open_writer_time = datetime.datetime.now()
+            print('open_writer时长:',open_writer_time-create_session)
+            record = upload_table.new_record()
+            if message.key is not None:
+                record[0] = message.key.decode('utf-8')
+            else:
+                record[0] = ''
+            record[1] = message.value.decode('utf-8')
+            record[2] = ts
+            open_writer2write = datetime.datetime.now()
+            print('open_writer-write时长:',open_writer2write-open_writer_time)
+            writer.write(record)
+            write_time = datetime.datetime.now()
+            print('write时长:',write_time-open_writer2write)
+             
+        count += 1
+        #获取lag
+        lagstart = datetime.datetime.now() 
+        tp = TopicPartition(message.topic, message.partition)
+        highwater = consumer.highwater(tp)
+        lag = (highwater - 1) - message.offset
+        #lag为0则上传
+        if lag == 0:
+            writer.close()
+            writer = upload_session.open_record_writer()
+            count = 1
+        end = datetime.datetime.now()
+        print('tp:',tp,'highwater:',highwater,'lag',lag)
+        print('获取lag时长:', end-lagstart)
+        print('结束时间:',end.strftime('%Y.%m.%d %H:%M:%S'))
+        print('总时长:', end-start)
+except KeyboardInterrupt:
+    sys.exit()
+e
