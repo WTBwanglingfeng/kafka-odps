@@ -5,6 +5,7 @@ from kafka import KafkaConsumer
 import sys
 import re
 import time, datetime
+import json
 
 #maxcompute setup
 access_id = ''
@@ -14,7 +15,7 @@ endpoint = ''
 #maxcompute init and get update table
 odps = ODPS(access_id, access_key, project, endpoint)
 #maxcompute init and get update table
-upload_table = odps.get_table('log_table')
+upload_table = odps.get_table('')
 #kafka setup
 bootstrap_servers = ['']
 topicName = ''
@@ -25,26 +26,36 @@ tunnel = TableTunnel(odps)
 try:
     #先消费一个
     message = next(consumer)
+    #print("!!!!!!!!!!!!\n",message.value)
+    #msg = str(message.value.decode('utf-8')).replace('\\', '')
+    msg = re.search('log_content:({.*})\"', str(message.value.decode('utf-8'))).group(1)
+    print(msg)
+    msg = json.loads(eval('"""' + msg + '"""'))
+    print(msg)
     #解析提取timestamp
-    ts = re.search('\\\\"timestamp[^0-9]*([0-9]*)', str(message.value)).group(1)
+    #ts = re.search('"timestamp[^0-9]*([0-9]*)', str(message.value)).group(1)
+    #ts = re.search('\"timestamp[^0-9]*([0-9]*)', msg).group(1)
+    ts = msg['timestamp']
     print('当前ts:',ts)
     #ts转换成年月日时分秒形式，之后写入分区
     ts = time.strftime("%Y%m%d%H", time.localtime(int(ts)))
     #记录当前ts
     last_ts = ts
+    print('当前分区:', ts)
     #建立分区
     upload_table.create_partition('ds='+ts, if_not_exists=True)
     upload_session = tunnel.create_stream_upload_session(upload_table, partition_spec='ds=' + ts)
     writer = upload_session.open_record_writer()
     #数据写入数据表
     record = upload_table.new_record()
-    if message.key is not None:
-        record[0] = message.key.decode('utf-8')
-    else:
-        record[0] = ''
-    record[1] = message.value.decode('utf-8')
+    #record[0] = re.search('\\\"event_name\\\":\\\"(.*?)\\\"', msg).group(1)
+    record[0] = msg['event_name']
+    record[1] = json.dumps(msg)
     record[2] = ts
+    print(record)
     writer.write(record)
+    writer.close()
+    writer = upload_session.open_record_writer()
     count = 1
 
     for message in consumer:
@@ -57,11 +68,16 @@ try:
         print('%d号任务启动' %count)
         start = datetime.datetime.now()
         print('启动时间:',start.strftime('%Y.%m.%d %H:%M:%S'))
-        
+        #print("!!!!!!!!!!!!\n",message.value)
+        #msg = str(message.value.decode('utf-8')).replace('\\', '')         
+        msg = re.search('log_content:({.*})\"', str(message.value.decode('utf-8'))).group(1)
+        msg = json.loads(eval('"""' + msg + '"""'))
         #获取时间
-        ts = re.search('\\\\"timestamp[^0-9]*([0-9]*)', str(message.value)).group(1)
+        #ts = re.search('\"timestamp[^0-9]*([0-9]*)', msg).group(1)
+        ts = msg['timestamp']
         print('当前ts:',ts)
         ts = time.strftime("%Y%m%d%H", time.localtime(int(ts)))
+        print('当前分区:', ts)
         #判断是否存在分区
         panduan1 = datetime.datetime.now()
         is_exist = (last_ts == ts)
@@ -72,12 +88,11 @@ try:
         #存在分区，直接写入
         if is_exist:
             print('存在分区')
-            if message.key is not None:
-                record[0] = message.key.decode('utf-8')
-            else:
-                record[0] = ''
-            record[1] = message.value.decode('utf-8')
+            #record[0] = re.search('\\\"event_name\\\":\\\"(.*?)\\\"', msg).group(1)
+            record[0] = msg['event_name']
+            record[1] = json.dumps(msg)
             record[2] = ts
+            print(record)
             write_record_time = datetime.datetime.now()
             writer.write(record)
             write_time = datetime.datetime.now()
@@ -99,12 +114,11 @@ try:
             open_writer_time = datetime.datetime.now()
             print('open_writer时长:',open_writer_time-create_session)
             record = upload_table.new_record()
-            if message.key is not None:
-                record[0] = message.key.decode('utf-8')
-            else:
-                record[0] = ''
-            record[1] = message.value.decode('utf-8')
+            #record[0] = re.search('\\\"event_name\\\":\\\"(.*?)\\\"', msg).group(1)
+            record[0] = msg['event_name']
+            record[1] = json.dumps(msg)
             record[2] = ts
+            print(record)
             open_writer2write = datetime.datetime.now()
             print('open_writer-write时长:',open_writer2write-open_writer_time)
             writer.write(record)
@@ -129,4 +143,4 @@ try:
         print('总时长:', end-start)
 except KeyboardInterrupt:
     sys.exit()
-e
+
